@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e7490">
+  <title>Clínica Veterinária | Atendimento</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, sans-serif; color: #24343a; background: #f3f8fa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+    .app { width: min(100%, 760px); height: min(88vh, 820px); min-height: 520px; display: flex; flex-direction: column; overflow: hidden; background: #fff; border: 1px solid #d9e6e9; border-radius: 12px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid #e3edef; }
+    h1 { font-size: 18px; margin: 0; line-height: 1.2; }
+    .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    button, a { font: inherit; }
+    .new, .admin { color: #0e7490; background: #fff; border: 1px solid #c7dfe5; border-radius: 7px; padding: 8px 11px; font-size: 13px; text-decoration: none; white-space: nowrap; cursor: pointer; }
+    .new:hover, .admin:hover { background: #eef8fb; }
+    .statusbar { display: flex; align-items: center; gap: 7px; padding: 8px 22px; font-size: 12px; color: #63767c; border-bottom: 1px solid #eaf1f3; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #d19b4f; }
+    .dot.online { background: #0891b2; }
+    .dot.offline { background: #c76363; }
+    main { flex: 1; overflow-y: auto; padding: 24px; background: #fff; }
+    .intro { margin: 24px auto; text-align: center; color: #7b8d92; }
+    .intro h2 { font-size: 17px; font-weight: 500; margin: 0; }
+    .messages { display: flex; flex-direction: column; gap: 13px; }
+    .row { display: flex; flex-direction: column; max-width: min(80%, 560px); }
+    .row.user { align-self: flex-end; align-items: flex-end; }
+    .row.bot, .row.error { align-self: flex-start; }
+    .name { display: none; }
+    .bubble { padding: 11px 14px; border-radius: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; }
+    .bot .bubble { background: #f1f6f8; }
+    .user .bubble { background: #0e7490; color: #fff; }
+    .error .bubble { background: #fff2f0; color: #963f36; }
+    .typing { color: #6d8188; font-size: 13px; padding: 12px 4px; }
+    .composer { padding: 15px 20px; border-top: 1px solid #e3edef; background: #fff; }
+    form { display: flex; align-items: end; gap: 10px; }
+    textarea { resize: none; min-height: 48px; max-height: 150px; flex: 1; padding: 11px 13px; border-radius: 8px; border: 1px solid #cbdde2; font: inherit; line-height: 1.5; outline: 0; }
+    textarea:focus { border-color: #0e7490; }
+    button.send { height: 48px; padding: 0 18px; color: #fff; background: #0e7490; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    button.send:hover { background: #155e75; }
+    button.send:disabled, textarea:disabled { opacity: .55; cursor: not-allowed; }
+    .recovery { margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: #63767c; font-size: 12px; }
+    .recovery[hidden] { display: none; }
+    .recovery input { width: 100px; padding: 7px 9px; border: 1px solid #cbdde2; border-radius: 6px; font: inherit; }
+    .recovery button { padding: 7px 10px; border: 1px solid #c7dfe5; border-radius: 6px; color: #0e7490; background: #fff; cursor: pointer; }
+    @media (max-width: 620px) { body { padding: 0; } .app { height: 100dvh; min-height: 0; border: 0; border-radius: 0; } header { padding: 14px; } .header-actions { gap: 5px; } .new, .admin { padding: 7px 8px; font-size: 11px; } main { padding: 18px 12px; } .row { max-width: 88%; } .composer { padding: 12px; } h1 { font-size: 16px; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Clínica Veterinária</h1>
+      <div class="header-actions">
+        <button class="new" id="new-chat" type="button">Nova conversa</button>
+        <a class="admin" href="/admin" target="_blank" rel="noopener">Administração</a>
+      </div>
+    </header>
+    <div class="statusbar"><span class="dot" id="dot"></span><span id="status">Verificando conexão…</span></div>
+    <main id="scroll-area">
+      <div class="intro" id="intro"><h2>Como podemos ajudar?</h2></div>
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <div class="typing" id="typing" hidden>Respondendo…</div>
+    </main>
+    <div class="composer">
+      <form id="form"><textarea id="message" rows="1" maxlength="2000" aria-label="Sua mensagem" placeholder="Escreva sua mensagem…" required></textarea><button class="send" id="send" type="submit">Enviar</button></form>
+      <div class="recovery" id="recovery" hidden><label for="recovery-id">Acompanhar pedido:</label><input id="recovery-id" aria-label="ID do pedido" placeholder="ID" inputmode="numeric" maxlength="12"><button id="recovery-submit" type="button">Buscar</button></div>
+    </div>
+  </div>
+  <script>
+    const storageKey = 'clinica-veterinaria-chat-v1';
+    const messages = document.getElementById('messages');
+    const intro = document.getElementById('intro');
+    const typing = document.getElementById('typing');
+    const field = document.getElementById('message');
+    const send = document.getElementById('send');
+    const scrollArea = document.getElementById('scroll-area');
+    const recovery = document.getElementById('recovery');
+    let state;
+    try { state = JSON.parse(sessionStorage.getItem(storageKey)); } catch { /* cria nova sessão */ }
+    if (!state || !state.sessionId || !Array.isArray(state.history)) {
+      state = { sessionId: crypto.randomUUID(), history: [], complete: false, appointmentId: null, confirmed: false };
+    }
+
+    function save() { sessionStorage.setItem(storageKey, JSON.stringify(state)); }
+    function updateRecovery() {
+      recovery.hidden = !!state.appointmentId || (!state.complete && state.history.length > 0);
+    }
+    function bubble(role, text) {
+      const row = document.createElement('div');
+      row.className = `row ${role}`;
+      const label = document.createElement('span');
+      label.className = 'name';
+      label.textContent = role === 'user' ? 'Você' : role === 'error' ? 'Aviso' : 'Clínica';
+      const content = document.createElement('div');
+      content.className = 'bubble';
+      content.textContent = text;
+      row.append(label, content);
+      messages.append(row);
+      intro.hidden = true;
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+    }
+    for (const item of state.history) bubble(item.role, item.text);
+    if (state.complete) { field.disabled = true; send.disabled = true; field.placeholder = 'Pedido registrado'; }
+    save();
+    updateRecovery();
+
+    async function connection() {
+      if (location.protocol === 'file:') {
+        document.getElementById('dot').className = 'dot offline';
+        document.getElementById('status').textContent = 'Abra este chat em http://127.0.0.1:8080 — não pelo arquivo HTML.';
+        field.disabled = send.disabled = true;
+        return;
+      }
+      try {
+        const response = await fetch('/api/health', { cache: 'no-store' });
+        document.getElementById('dot').className = 'dot ' + (response.ok ? 'online' : 'offline');
+        const pedido = state.complete
+          ? (state.appointmentId ? ` · Pedido #${state.appointmentId}${state.confirmed ? ' confirmado' : ''}` : ' · Pedido sem ID')
+          : '';
+        document.getElementById('status').textContent = response.ok
+          ? 'Conectado' + pedido
+          : 'Servidor indisponível';
+      } catch {
+        document.getElementById('dot').className = 'dot offline';
+        document.getElementById('status').textContent = 'Sem conexão com o servidor';
+      }
+    }
+    connection();
+
+    let checkingStatus = false;
+    async function checkAppointmentStatus() {
+      const appointmentId = String(state.appointmentId || '');
+      const sessionId = state.sessionId;
+      if (!state.complete || state.confirmed || !/^[0-9]{1,12}$/.test(appointmentId) || checkingStatus) return;
+      checkingStatus = true;
+      try {
+        const response = await fetch(`/api/status?id=${encodeURIComponent(appointmentId)}`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const result = await response.json();
+        if (state.sessionId !== sessionId || String(state.appointmentId) !== appointmentId || state.confirmed) return;
+        if (String(result.id_agendamento) === appointmentId && result.status === 'Confirmado' && result.confirmado === true) {
+          const notice = `Agendamento #${appointmentId} confirmado pela clínica.`;
+          bubble('bot', notice);
+          state.history.push({ role: 'bot', text: notice });
+          state.confirmed = true;
+          save();
+          connection();
+        }
+      } catch { /* A próxima consulta tenta novamente sem interromper o chat. */ }
+      finally { checkingStatus = false; }
+    }
+    checkAppointmentStatus();
+    setInterval(checkAppointmentStatus, 15000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkAppointmentStatus();
+    });
+
+    document.getElementById('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const text = field.value.trim();
+      if (!text || field.disabled) return;
+      field.value = '';
+      field.disabled = send.disabled = true;
+      typing.hidden = false;
+      bubble('user', text);
+      state.history.push({ role: 'user', text });
+      save();
+      updateRecovery();
+      try {
+        const response = await fetch('/api/cliente', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessao_id: state.sessionId, mensagem: text }),
+        });
+        if (!response.ok) throw new Error(`O servidor respondeu ${response.status}. Verifique a execução no n8n.`);
+        const raw = await response.text();
+        if (!raw.trim()) throw new Error('O fluxo terminou sem resposta. Verifique se a IA falhou na execução do n8n.');
+        let result;
+        try { result = JSON.parse(raw); }
+        catch { throw new Error('O n8n devolveu uma resposta inválida.'); }
+        if (typeof result.resposta !== 'string') throw new Error('O n8n não devolveu uma resposta válida.');
+        bubble('bot', result.resposta);
+        state.history.push({ role: 'bot', text: result.resposta });
+        if (result.intencao_concluida) {
+          state.complete = true;
+          if (/^[0-9]{1,12}$/.test(String(result.id_agendamento || ''))) {
+            state.appointmentId = String(result.id_agendamento);
+            state.confirmed = false;
+          }
+        }
+        save();
+        updateRecovery();
+        connection();
+        if (state.complete && state.appointmentId) checkAppointmentStatus();
+      } catch (error) {
+        const notice = `${error.message} A mensagem pode ter sido recebida; confira a aba Executions antes de enviá-la novamente.`;
+        bubble('error', notice);
+        state.history.push({ role: 'error', text: notice });
+        save();
+      } finally {
+        typing.hidden = true;
+        field.disabled = send.disabled = state.complete;
+        if (!state.complete) field.focus();
+        else field.placeholder = 'Pedido registrado';
+        scrollArea.scrollTop = scrollArea.scrollHeight;
+      }
+    });
+
+    field.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        document.getElementById('form').requestSubmit();
+      }
+    });
+    document.getElementById('recovery-submit').addEventListener('click', async () => {
+      const id = document.getElementById('recovery-id').value.trim();
+      if (state.appointmentId || (!state.complete && state.history.length > 0) ||
+          !/^[0-9]{1,12}$/.test(id)) return;
+      const button = document.getElementById('recovery-submit');
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Não consegui consultar o pedido agora. Tente novamente.');
+        const result = await response.json();
+        if (String(result.id_agendamento) !== id ||
+            !['Pendente', 'Confirmado'].includes(result.status)) {
+          throw new Error('Não encontrei esse número de pedido. Confira o ID e tente novamente.');
+        }
+        if (!state.complete) {
+          const notice = `Acompanhando o pedido #${id}.`;
+          bubble('bot', notice);
+          state.history.push({ role: 'bot', text: notice });
+        }
+        state.complete = true;
+        state.appointmentId = id;
+        state.confirmed = false;
+        field.disabled = send.disabled = true;
+        field.placeholder = 'Pedido em acompanhamento';
+        save();
+        updateRecovery();
+        connection();
+        checkAppointmentStatus();
+      } catch (error) {
+        bubble('error', error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.getElementById('recovery-id').addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        document.getElementById('recovery-submit').click();
+      }
+    });
+    document.getElementById('new-chat').addEventListener('click', () => {
+      if (state.history.length && !confirm('Iniciar outra conversa? A conversa atual continuará registrada na planilha.')) return;
+      state = { sessionId: crypto.randomUUID(), history: [], complete: false, appointmentId: null, confirmed: false };
+      save();
+      updateRecovery();
+      connection();
+      messages.replaceChildren();
+      intro.hidden = false;
+      field.disabled = send.disabled = false;
+      field.placeholder = 'Escreva sua mensagem…';
+      field.focus();
+    });
+  </script>
+</body>
+</html>

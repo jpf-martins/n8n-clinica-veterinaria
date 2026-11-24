@@ -1,0 +1,1760 @@
+{
+  "name": "Clínica Veterinária - Atendimento e Administração",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "clinica-atendimento",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -192,
+        432
+      ],
+      "id": "ca979579-240b-411c-8673-35f6e8cfcf0f",
+      "name": "Entrada - Cliente",
+      "webhookId": "a5747d1a-a915-4c2b-bbc5-11d3604f5fcc"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  \"recebido\": true,\n  \"resposta\": $('Sanitizar JSON da IA').first().json.resposta_cliente,\n  \"intencao_concluida\": $('Sanitizar JSON da IA').first().json.intencao_concluida,\n  \"id_agendamento\": $('Sanitizar JSON da IA').first().json.novo_agendamento ? $execution.id : null\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1456,
+        560
+      ],
+      "id": "1d709370-6a54-4248-a7df-1c7f438de0f4",
+      "name": "Resposta - Cliente"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Você é a recepcionista virtual de uma clínica veterinária.\n\nAnalise a mensagem atual do cliente junto com os dados e o histórico anteriores.\n\nNunca invente informações. Preserve os dados anteriores quando o cliente não os mencionar novamente. Se o cliente corrigir alguma informação, use a informação mais recente.\n\nMensagem atual do cliente:\n{{ $('Entrada - Cliente').first().json.body.mensagem }}\n\nDados coletados anteriormente:\n{{ $json.dados_parciais || '{}' }}\n\nHistórico anterior:\n{{ $json.historico || 'Nenhuma conversa anterior.' }}\n\nData e hora atual:\n{{ $now.toISO() }}\n\nRetorne exclusivamente um JSON válido, sem explicações, comentários ou blocos markdown.\n\nUse exatamente esta estrutura:\n\n{\n  \"nome_tutor\": null,\n  \"telefone\": null,\n  \"nome_pet\": null,\n  \"especie\": null,\n  \"servico_desejado\": null,\n  \"data_hora_sugerida\": null,\n  \"intencao_concluida\": false,\n  \"pergunta_retorno\": \"\",\n  \"resposta_cliente\": \"\",\n  \"resumo_conversa\": \"\"\n}\n\nRegras:\n\n1. Combine os dados anteriores com as informações da mensagem atual.\n2. Use null somente quando a informação não estiver nem nos dados anteriores nem na mensagem atual.\n3. Nunca apague um dado anterior apenas porque ele não foi repetido.\n4. intencao_concluida somente será true quando nome_tutor, telefone, nome_pet, especie, servico_desejado e data_hora_sugerida estiverem preenchidos.\n5. Se faltar informação, intencao_concluida deve ser false.\n6. Quando faltar informação, pergunta_retorno deve solicitar somente o próximo dado necessário.\n7. Não pergunte novamente algo que já esteja nos dados anteriores.\n8. Quando todos os dados estiverem completos, pergunta_retorno deve ser uma string vazia.\n9. resposta_cliente deve ser educada, natural e adequada ao estado atual da conversa.\n10. Quando os dados estiverem completos, informe que o pedido foi recebido e ainda depende da confirmação da clínica.\n11. resumo_conversa deve resumir todos os dados coletados até o momento.\n12. Não coloque o JSON entre ```json e ```.\n13. Não retorne nenhum texto fora do JSON.",
+        "needsFallback": true,
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        272,
+        432
+      ],
+      "id": "0fc745ff-1f6e-4fab-ba29-33b1650849a2",
+      "name": "IA - Interpretar mensagem",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 5
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        272,
+        656
+      ],
+      "id": "10e02616-f388-4b17-87eb-9789a21dac32",
+      "name": "Google Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "jsCode": "const entrada = $('Entrada - Cliente').first().json.body;\nconst anterior = $('Buscar conversa').first().json || {};\nconst jaConcluida = String(anterior.concluida ?? '').trim().toLowerCase() === 'true';\n\nif (jaConcluida) {\n  let parciais = {};\n  try {\n    parciais = JSON.parse(anterior.dados_parciais || '{}');\n  } catch (erro) {\n    parciais = {};\n  }\n  return [{\n    json: {\n      sessao_id: entrada.sessao_id,\n      mensagem_original: entrada.mensagem,\n      ...parciais,\n      intencao_concluida: true,\n      pergunta_retorno: '',\n      resposta_cliente: 'Este pedido já foi registrado nesta conversa. Para fazer outro agendamento, inicie uma nova conversa.',\n      resumo_conversa: '',\n      novo_agendamento: false,\n    },\n  }];\n}\n\nconst bruto = $json.text ?? $json.output ?? '';\nconst limpo = String(bruto)\n  .replace(/^\\x60\\x60\\x60json\\s*/i, '')\n  .replace(/^\\x60\\x60\\x60\\s*/i, '')\n  .replace(/\\s*\\x60\\x60\\x60$/i, '')\n  .trim();\n\nlet dados;\ntry {\n  dados = JSON.parse(limpo);\n} catch (erro) {\n  throw new Error('A IA não retornou um JSON válido: ' + erro.message);\n}\n\n\nif (!dados || typeof dados !== 'object' || Array.isArray(dados)) {\n  throw new Error('A IA deve retornar um objeto JSON.');\n}\n\nlet dadosAnteriores = {};\ntry {\n  const parciais = JSON.parse(anterior.dados_parciais || '{}');\n  if (parciais && typeof parciais === 'object' && !Array.isArray(parciais)) dadosAnteriores = parciais;\n} catch (erro) {\n  dadosAnteriores = {};\n}\n\nconst camposPersistentes = ['nome_tutor', 'telefone', 'nome_pet', 'servico_desejado', 'data_hora_sugerida'];\nfor (const campo of camposPersistentes) {\n  if ((dados[campo] == null || String(dados[campo]).trim() === '') &&\n      dadosAnteriores[campo] != null && String(dadosAnteriores[campo]).trim() !== '') {\n    dados[campo] = dadosAnteriores[campo];\n  }\n}\n\nfunction semAcentos(valor) {\n  return String(valor ?? '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\n}\n\nfunction especieReconhecida(valor) {\n  const texto = semAcentos(valor);\n  const grupos = [\n    ['cachorro', /\\b(?:cachorr[oa]s?|caes|cao|cadelas?|canin[oa]s?)\\b/],\n    ['gato', /\\b(?:gat[oa]s?|felin[oa]s?)\\b/],\n    ['hamster', /\\bhamsters?\\b/],\n    ['coelho', /\\bcoelh[oa]s?\\b/],\n    ['ave', /\\b(?:aves?|passaros?|calopsitas?|periquitos?|papagaios?)\\b/],\n    ['peixe', /\\bpeixes?\\b/],\n    ['tartaruga', /\\btartarugas?\\b/],\n    ['porquinho-da-india', /\\bporquinhos?[ -]da[ -]india\\b/],\n    ['furao', /\\b(?:furao|furoes)\\b/],\n    ['cavalo', /\\b(?:cavalos?|eguas?)\\b/],\n    ['iguana', /\\biguanas?\\b/],\n  ];\n  const encontradas = grupos.filter(([, padrao]) => padrao.test(texto)).map(([especie]) => especie);\n  return encontradas.length === 1 ? encontradas[0] : null;\n}\n\ndados.especie = especieReconhecida(entrada.mensagem) ||\n  especieReconhecida(dados.especie) ||\n  especieReconhecida(dadosAnteriores.especie);\n\nfunction normalizarDataHora(valor) {\n  if (valor == null || String(valor).trim() === '') return null;\n  const texto = String(valor).trim();\n  let partes = texto.match(/^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{1,2}):(\\d{2})(?::\\d{2})?$/);\n  let ano, mes, dia, hora, minuto;\n  if (partes) {\n    [, ano, mes, dia, hora, minuto] = partes.map(Number);\n  } else {\n    partes = texto.match(/^(\\d{2})\\/(\\d{2})\\/(\\d{4})\\s*(?:às?|as)?\\s*(\\d{1,2}):(\\d{2})(?::\\d{2})?$/i);\n    if (!partes) return null;\n    [, dia, mes, ano, hora, minuto] = partes.map(Number);\n  }\n  const data = new Date(Date.UTC(ano, mes - 1, dia, hora, minuto));\n  if (data.getUTCFullYear() !== ano || data.getUTCMonth() !== mes - 1 ||\n      data.getUTCDate() !== dia || data.getUTCHours() !== hora ||\n      data.getUTCMinutes() !== minuto) return null;\n  const dois = numero => String(numero).padStart(2, '0');\n  return ano + '-' + dois(mes) + '-' + dois(dia) + ' ' + dois(hora) + ':' + dois(minuto);\n}\n\nconst original = dados.data_hora_sugerida;\ndados.data_hora_sugerida = normalizarDataHora(original);\nif (original != null && String(original).trim() !== '' && !dados.data_hora_sugerida) {\n  dados.intencao_concluida = false;\n  dados.pergunta_retorno = 'Qual é a data e o horário desejados? Use DD/MM/AAAA às HH:mm.';\n  dados.resposta_cliente = 'Não consegui identificar a data e o horário com segurança. Pode informá-los como DD/MM/AAAA às HH:mm?';\n}\n\nconst obrigatorios = ['nome_tutor', 'telefone', 'nome_pet', 'especie', 'servico_desejado', 'data_hora_sugerida'];\nconst faltando = obrigatorios.find(campo => dados[campo] == null || String(dados[campo]).trim() === '');\nconst perguntas = {\n  nome_tutor: 'Qual é o seu nome?',\n  telefone: 'Qual é o seu telefone para contato?',\n  nome_pet: 'Qual é o nome do seu pet?',\n  especie: 'Qual é a espécie do seu pet (por exemplo: cachorro, gato ou hamster)?',\n  servico_desejado: 'Qual serviço você deseja agendar?',\n  data_hora_sugerida: 'Para qual data e horário você quer agendar? Informe DD/MM/AAAA às HH:mm.',\n};\nconst marcadores = {\n  nome_tutor: /\\b(nome|chama|tutor)\\b/,\n  telefone: /\\b(telefone|contato|celular|numero)\\b/,\n  nome_pet: /\\b(nome|chama)\\b.*\\b(pet|animal|cachorro|gato|hamster|coelho)\\b/,\n  especie: /\\b(especie|tipo de animal)\\b/,\n  servico_desejado: /\\b(servico|atendimento|consulta|banho|tosa|vacina|castracao)\\b/,\n  data_hora_sugerida: /\\b(data|dia|horario|hora|quando)\\b/,\n};\nif (faltando) {\n  dados.intencao_concluida = false;\n  const perguntaIA = semAcentos(dados.pergunta_retorno || dados.resposta_cliente || '');\n  const respostaIA = semAcentos(dados.resposta_cliente || '');\n  if (!marcadores[faltando].test(perguntaIA) || !marcadores[faltando].test(respostaIA)) {\n    dados.pergunta_retorno = perguntas[faltando];\n    dados.resposta_cliente = perguntas[faltando];\n  }\n} else {\n  const respostaIA = String(dados.resposta_cliente || '').trim();\n  const iaConcluiu = dados.intencao_concluida === true;\n  dados.intencao_concluida = true;\n  dados.pergunta_retorno = '';\n  if (!iaConcluiu || !respostaIA || respostaIA.includes('?')) {\n    dados.resposta_cliente = 'Recebemos seu pedido de ' + dados.servico_desejado + ' para ' + dados.nome_pet + ' em ' + dados.data_hora_sugerida + '. Ele ainda depende da confirmação da clínica.';\n  }\n}\nreturn [{\n  json: {\n    sessao_id: entrada.sessao_id,\n    mensagem_original: entrada.mensagem,\n    ...dados,\n    novo_agendamento: dados.intencao_concluida === true,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        432
+      ],
+      "id": "bb9b6a4b-3cfa-46f8-8a7a-6aabe195f98c",
+      "name": "Sanitizar JSON da IA"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8fc26da9-ecc8-4148-b9ee-83a9766fb87d",
+              "leftValue": "={{ $('Sanitizar JSON da IA').first().json.novo_agendamento }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1072,
+        432
+      ],
+      "id": "edc358b1-ec35-4014-9152-d7e86e98b217",
+      "name": "Agendamento completo?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Conversas",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "sessao_id",
+              "lookupValue": "={{ $('Entrada - Cliente').first().json.body.sessao_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        48,
+        432
+      ],
+      "id": "c7e4ff0e-a046-432b-bd2c-20afa26d05ad",
+      "name": "Buscar conversa",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Agendamentos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $execution.id }}",
+            "criado_em": "={{ $now.toISO() }}",
+            "nome_tutor": "={{ $('Sanitizar JSON da IA').first().json.nome_tutor }}",
+            "telefone": "={{ $('Sanitizar JSON da IA').first().json.telefone }}",
+            "nome_pet": "={{ $('Sanitizar JSON da IA').first().json.nome_pet }}",
+            "especie": "={{ $('Sanitizar JSON da IA').first().json.especie }}",
+            "servico_desejado": "={{ $('Sanitizar JSON da IA').first().json.servico_desejado }}",
+            "data_hora_sugerida": "={{ $('Sanitizar JSON da IA').first().json.data_hora_sugerida }}",
+            "resumo_conversa": "={{ $('Sanitizar JSON da IA').first().json.resumo_conversa }}",
+            "status": "Pendente"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "criado_em",
+              "displayName": "criado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nome_tutor",
+              "displayName": "nome_tutor",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "telefone",
+              "displayName": "telefone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nome_pet",
+              "displayName": "nome_pet",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "especie",
+              "displayName": "especie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "servico_desejado",
+              "displayName": "servico_desejado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "data_hora_sugerida",
+              "displayName": "data_hora_sugerida",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "resumo_conversa",
+              "displayName": "resumo_conversa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1328,
+        320
+      ],
+      "id": "20f8d754-a508-4930-890e-10f82a0c47b8",
+      "name": "Salvar agendamento"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Conversas",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": 0,
+            "sessao_id": "={{ $('Entrada - Cliente').first().json.body.sessao_id }}",
+            "historico": "={{ (($('Buscar conversa').first().json.historico || '') + '\\nCliente: ' + $('Entrada - Cliente').first().json.body.mensagem + '\\nClínica: ' + $json.resposta_cliente).trim() }}",
+            "dados_parciais": "={{ JSON.stringify({   nome_tutor: $json.nome_tutor,   telefone: $json.telefone,   nome_pet: $json.nome_pet,   especie: $json.especie,   servico_desejado: $json.servico_desejado,   data_hora_sugerida: $json.data_hora_sugerida }) }}",
+            "ultima_pergunta": "={{ $json.pergunta_retorno || '' }}",
+            "atualizado_em": "={{ $now.toISO() }}",
+            "concluida": "={{ $json.intencao_concluida }}"
+          },
+          "matchingColumns": [
+            "sessao_id"
+          ],
+          "schema": [
+            {
+              "id": "sessao_id",
+              "displayName": "sessao_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "historico",
+              "displayName": "historico",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "dados_parciais",
+              "displayName": "dados_parciais",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ultima_pergunta",
+              "displayName": "ultima_pergunta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "atualizado_em",
+              "displayName": "atualizado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "concluida",
+              "displayName": "concluida",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        864,
+        432
+      ],
+      "id": "df1625e4-c7ad-4cfd-8fd4-52ed6a7a72ce",
+      "name": "Salvar conversa"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Comandos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id_comando": "={{ 'notificacao-' + $execution.id }}",
+            "recebido_em": "={{ $now.toISO() }}",
+            "comando": "={{ 'NOVO_AGENDAMENTO ' + $execution.id }}",
+            "status_processamento": "nao_lida",
+            "resposta": "={{ 'Novo agendamento #' + $execution.id + ' — Tutor: ' + $('Sanitizar JSON da IA').first().json.nome_tutor + ' — Pet: ' + $('Sanitizar JSON da IA').first().json.nome_pet + ' — Serviço: ' + $('Sanitizar JSON da IA').first().json.servico_desejado + ' — Data/hora: ' + $('Sanitizar JSON da IA').first().json.data_hora_sugerida }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "id_comando",
+              "displayName": "id_comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recebido_em",
+              "displayName": "recebido_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "comando",
+              "displayName": "comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status_processamento",
+              "displayName": "status_processamento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "resposta",
+              "displayName": "resposta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processado_em",
+              "displayName": "processado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1584,
+        320
+      ],
+      "id": "3ad75a09-12f3-42d6-80e3-1f5b78c74924",
+      "name": "Registrar notificação"
+    },
+    {
+      "parameters": {
+        "public": true,
+        "authentication": "n8nUserAuth",
+        "initialMessages": "Administração da Clínica Veterinária.\nComandos: /notificacoes, /listar pendentes, /aprovar ID",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -160,
+        -512
+      ],
+      "id": "10aa7a3d-fa39-45bd-bea2-4e5f91f6ff0e",
+      "name": "Entrada - Administração",
+      "webhookId": "fb34bb77-6a22-4b5b-90c3-612c213ca058"
+    },
+    {
+      "parameters": {
+        "jsCode": "const texto = String($json.chatInput ?? '').trim();\n\nlet acao = 'ajuda';\nlet idAgendamento = null;\n\nif (/^\\/listar\\s+pendentes$/i.test(texto)) {\n  acao = 'listar';\n} else if (/^\\/notificacoes$/i.test(texto)) {\n  acao = 'notificacoes';\n} else {\n  const resultado = texto.match(/^\\/aprovar\\s+(\\S+)$/i);\n\n  if (resultado) {\n    acao = 'aprovar';\n    idAgendamento = resultado[1];\n  }\n}\n\nreturn [\n  {\n    json: {\n      sessionId: $json.sessionId,\n      comando: texto,\n      acao,\n      id_agendamento: idAgendamento\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        -512
+      ],
+      "id": "f2f6fe1c-aed9-488b-9894-ac96a240b602",
+      "name": "Interpretar comando"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "listar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "8c22413e-76ff-46e5-ad86-23ec81c3e310"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "listar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "f136de76-a829-46d6-8d65-ac5b3002142b",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "aprovar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "aprovar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5879171e-83f3-4342-8e84-afabb5ec87d3",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "ajuda",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ajuda"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "3a381916-3e23-4dd1-8f47-783b6ee0ee52",
+                    "leftValue": "={{ $json.acao }}",
+                    "rightValue": "notificacoes",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "notificacoes"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        336,
+        -544
+      ],
+      "id": "dd0ef2b6-bd3f-415b-b23a-584403c5c214",
+      "name": "Qual comando?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const comando = String($json.comando ?? '').trim().toLowerCase();\nconst titulo = comando === '/ajuda'\n  ? 'Comandos disponíveis:'\n  : 'Comando não reconhecido.\\n\\nComandos disponíveis:';\n\nreturn [{\n  json: {\n    text: `${titulo}\n• /notificacoes\n• /listar pendentes\n• /aprovar ID\n\nExemplo: /aprovar 61`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -256
+      ],
+      "id": "d48b84d1-5c40-4d72-9efa-8ed2509ff7a8",
+      "name": "Responder - Ajuda"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Agendamentos",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "Pendente"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        608,
+        -800
+      ],
+      "id": "6fc50528-f9c5-43db-9c7c-62a15c3a4ab9",
+      "name": "Buscar pendentes",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const pendentes = $input\n  .all()\n  .map(item => item.json)\n  .filter(item =>\n    item.id &&\n    String(item.status || '').trim().toLowerCase() === 'pendente'\n  );\n\nif (pendentes.length === 0) {\n  return [\n    {\n      json: {\n        text: 'Não existem agendamentos pendentes no momento.'\n      }\n    }\n  ];\n}\n\nconst linhas = pendentes.map(item => {\n  const tutor = item.nome_tutor || 'Tutor não informado';\n  const pet = item.nome_pet || 'Pet não informado';\n  const especie = item.especie || 'Espécie não informada';\n  const servico = item.servico_desejado || 'Serviço não informado';\n  const dataHora = item.data_hora_sugerida || 'Data não informada';\n\n  return `• #${item.id} — ${tutor} — ${pet} (${especie}) — ${servico} — ${dataHora}`;\n});\n\nreturn [\n  {\n    json: {\n      text:\n        `Agendamentos pendentes (${pendentes.length}):\\n\\n` +\n        linhas.join('\\n\\n') +\n        `\\n\\nPara confirmar, use: /aprovar ID`\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        -800
+      ],
+      "id": "23fd9f10-f79a-466c-b8e7-575141ced5d6",
+      "name": "Formatar pendentes"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Agendamentos",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "id",
+              "lookupValue": "={{ $json.id_agendamento }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        592,
+        -528
+      ],
+      "id": "ea7f4324-eef0-4313-be35-4a3544af9b19",
+      "name": "Buscar agendamento por ID",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const idSolicitado =\n  $('Interpretar comando').first().json.id_agendamento;\n\nconst agendamentoEncontrado =\n  $json.id !== undefined &&\n  $json.id !== null &&\n  String($json.id).trim() !== '';\n\nlet resultadoAprovacao;\n\nif (!agendamentoEncontrado) {\n  resultadoAprovacao = 'nao_encontrado';\n} else if (\n  String($json.status || '').trim().toLowerCase() !== 'pendente'\n) {\n  resultadoAprovacao = 'ja_processado';\n} else {\n  resultadoAprovacao = 'pronto_para_aprovar';\n}\n\nreturn [\n  {\n    json: {\n      ...$json,\n      id_solicitado: idSolicitado,\n      resultado_aprovacao: resultadoAprovacao\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        -528
+      ],
+      "id": "51d86cdb-c766-4d1a-8722-cf853f1e6246",
+      "name": "Validar agendamento"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      text:\n        `Não encontrei o agendamento #${$json.id_solicitado}. ` +\n        `Use /listar pendentes para consultar os IDs disponíveis.`\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -528
+      ],
+      "id": "385d7cd7-68f5-4489-bc9d-ab9a9a86738a",
+      "name": "Responder - Não encontrado"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      text: `O agendamento #${$json.id} já está com status ${$json.status}. Nenhuma alteração foi feita.`\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -320
+      ],
+      "id": "2f47b8f0-0458-4a70-bc5d-22671df76fe9",
+      "name": "Responder - Já processado"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.resultado_aprovacao }}",
+                    "rightValue": "pronto_para_aprovar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "70aa7e65-17df-42d3-8e00-bbbccf683aaa"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "aprovar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "568c97f0-01d6-4178-ae18-8aefff47e8a7",
+                    "leftValue": "={{ $json.resultado_aprovacao }}",
+                    "rightValue": "nao_encontrado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "nao_encontrado"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "a5a85897-987a-4b7e-8853-27fae4231287",
+                    "leftValue": "={{ $json.resultado_aprovacao }}",
+                    "rightValue": "ja_processado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ja_processado"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        -544
+      ],
+      "id": "385ed9ca-65fe-4531-8c6f-6f1424cf4f21",
+      "name": "Resultado da aprovação?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Agendamentos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "status": "Confirmado"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "criado_em",
+              "displayName": "criado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "nome_tutor",
+              "displayName": "nome_tutor",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "telefone",
+              "displayName": "telefone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "nome_pet",
+              "displayName": "nome_pet",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "especie",
+              "displayName": "especie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "servico_desejado",
+              "displayName": "servico_desejado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data_hora_sugerida",
+              "displayName": "data_hora_sugerida",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "resumo_conversa",
+              "displayName": "resumo_conversa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1280,
+        -704
+      ],
+      "id": "6d2a417e-ae1c-4e73-971f-38d1beee84ea",
+      "name": "Confirmar agendamento"
+    },
+    {
+      "parameters": {
+        "jsCode": "const agendamento = $('Validar agendamento').first().json;\n\nreturn [\n  {\n    json: {\n      text: `Agendamento #${agendamento.id} de ${agendamento.nome_tutor} para ${agendamento.nome_pet} confirmado com sucesso.`\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -704
+      ],
+      "id": "594ba4c7-9df7-4306-b947-f8a825fbf1e9",
+      "name": "Responder - Confirmado"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Comandos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id_comando": "={{ 'aprovacao-' + $execution.id }}",
+            "recebido_em": "={{ $now.toISO() }}",
+            "comando": "={{ $('Interpretar comando').first().json.comando }}",
+            "status_processamento": "concluido",
+            "resposta": "={{ 'Agendamento #' + $('Validar agendamento').first().json.id + ' confirmado com sucesso.' }}",
+            "processado_em": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "id_comando",
+              "displayName": "id_comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recebido_em",
+              "displayName": "recebido_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "comando",
+              "displayName": "comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status_processamento",
+              "displayName": "status_processamento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "resposta",
+              "displayName": "resposta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processado_em",
+              "displayName": "processado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1504,
+        -704
+      ],
+      "id": "bc68d747-bf8d-4790-b71e-022e08279c34",
+      "name": "Registrar comando de aprovação"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Comandos",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status_processamento",
+              "lookupValue": "nao_lida"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        592,
+        32
+      ],
+      "id": "02d6f7b2-337c-4af4-8e20-bb731edb2209",
+      "name": "Buscar notificações",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const avisos = $('Buscar notificações')\n  .all()\n  .map(item => item.json)\n  .filter(item =>\n    item.id_comando &&\n    String(item.status_processamento).trim().toLowerCase() === 'nao_lida'\n  );\n\nif (avisos.length === 0) {\n  return [{ json: { text: 'Não há notificações não lidas.' } }];\n}\n\nreturn [\n  {\n    json: {\n      text:\n        `Notificações não lidas (${avisos.length}):\\n\\n` +\n        avisos\n          .map(item => `• ${item.resposta || item.comando}`)\n          .join('\\n\\n')\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        48
+      ],
+      "id": "f54f83a6-25f4-40aa-81db-c0361b4b1687",
+      "name": "Formatar notificações"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1b664884-2357-4c06-9174-acacb191ecdb",
+              "leftValue": "={{ $json.id_comando ? 'sim' : 'nao' }}",
+              "rightValue": "sim",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        832,
+        32
+      ],
+      "id": "50c7210e-1fd0-4b7e-9d12-c89ceb67fcfb",
+      "name": "Há notificações?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Comandos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id_comando": "={{ $json.id_comando }}",
+            "status_processamento": "lida",
+            "processado_em": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "id_comando"
+          ],
+          "schema": [
+            {
+              "id": "id_comando",
+              "displayName": "id_comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "recebido_em",
+              "displayName": "recebido_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "comando",
+              "displayName": "comando",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status_processamento",
+              "displayName": "status_processamento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "resposta",
+              "displayName": "resposta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "processado_em",
+              "displayName": "processado_em",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1072,
+        -96
+      ],
+      "id": "91ef8433-c2ab-4c45-8236-3871f9c520a6",
+      "name": "Marcar notificações como lidas"
+    },
+    {
+      "parameters": {
+        "sendTo": "",
+        "subject": "Novo agendamento pendente - Clínica Veterinária",
+        "emailType": "text",
+        "message": "={{ $('Registrar notificação').first().json.resposta }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1936,
+        320
+      ],
+      "id": "241dcac2-f42b-4f7e-9ced-9ccdad939063",
+      "name": "Avisar administração por e-mail",
+      "webhookId": "00a89928-ad3a-4785-9843-5038d9173f5e",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        464,
+        656
+      ],
+      "id": "f2341482-a1ca-4eb1-b520-db2b39dbccc6",
+      "name": "Groq Chat Model"
+    },
+    {
+      "parameters": {
+        "path": "clinica-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -736,
+        240
+      ],
+      "id": "a5e05449-c58a-4881-9f98-c9473d2fcccc",
+      "name": "Status - Entrada",
+      "webhookId": "9b08be17-9880-4dcd-ac9a-d9be6770a999"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Agendamentos",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "id",
+              "lookupValue": "={{ /^[0-9]{1,12}$/.test(String($('Status - Entrada').first().json.query.id || '')) ? String($('Status - Entrada').first().json.query.id) : '__invalido__' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -496,
+        240
+      ],
+      "id": "131f063a-bb36-4201-be3b-09c6a627bb8f",
+      "name": "Status - Buscar agendamento",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const pedido = String($('Status - Entrada').first().json.query.id || '');\nconst linha = $input.first().json || {};\nconst encontrado = String(linha.id || '') === pedido;\nconst bruto = encontrado ? String(linha.status || '').trim().toLowerCase() : '';\nconst status = bruto === 'confirmado' ? 'Confirmado' :\n  bruto === 'pendente' ? 'Pendente' : 'Desconhecido';\nreturn [{ json: { id_agendamento: pedido, status, confirmado: status === 'Confirmado' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        240
+      ],
+      "id": "5fcb4cec-7398-4380-9329-bd3f1179dcff",
+      "name": "Status - Resposta segura"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        16,
+        240
+      ],
+      "id": "7398f50d-4129-4f19-8d91-fdeb32b7f06b",
+      "name": "Status - Retornar JSON"
+    }
+  ],
+  "connections": {
+    "Entrada - Cliente": {
+      "main": [
+        [
+          {
+            "node": "Buscar conversa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IA - Interpretar mensagem": {
+      "main": [
+        [
+          {
+            "node": "Sanitizar JSON da IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "IA - Interpretar mensagem",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitizar JSON da IA": {
+      "main": [
+        [
+          {
+            "node": "Salvar conversa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agendamento completo?": {
+      "main": [
+        [
+          {
+            "node": "Salvar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta - Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar conversa": {
+      "main": [
+        [
+          {
+            "node": "IA - Interpretar mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salvar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Registrar notificação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salvar conversa": {
+      "main": [
+        [
+          {
+            "node": "Agendamento completo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar notificação": {
+      "main": [
+        [
+          {
+            "node": "Resposta - Cliente",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Avisar administração por e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada - Administração": {
+      "main": [
+        [
+          {
+            "node": "Interpretar comando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar comando": {
+      "main": [
+        [
+          {
+            "node": "Qual comando?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qual comando?": {
+      "main": [
+        [
+          {
+            "node": "Buscar pendentes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Buscar agendamento por ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder - Ajuda",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Buscar notificações",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar pendentes": {
+      "main": [
+        [
+          {
+            "node": "Formatar pendentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar agendamento por ID": {
+      "main": [
+        [
+          {
+            "node": "Validar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Resultado da aprovação?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resultado da aprovação?": {
+      "main": [
+        [
+          {
+            "node": "Confirmar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder - Não encontrado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder - Já processado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Registrar comando de aprovação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar comando de aprovação": {
+      "main": [
+        [
+          {
+            "node": "Responder - Confirmado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar notificações": {
+      "main": [
+        [
+          {
+            "node": "Há notificações?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Há notificações?": {
+      "main": [
+        [
+          {
+            "node": "Marcar notificações como lidas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Formatar notificações",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar notificações como lidas": {
+      "main": [
+        [
+          {
+            "node": "Formatar notificações",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "IA - Interpretar mensagem",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Status - Entrada": {
+      "main": [
+        [
+          {
+            "node": "Status - Buscar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status - Buscar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Status - Resposta segura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status - Resposta segura": {
+      "main": [
+        [
+          {
+            "node": "Status - Retornar JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "active": false
+}
