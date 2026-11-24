@@ -22,6 +22,30 @@ flowchart LR
 
 O [workflow do n8n](workflows/clinica-veterinaria.json) contém o atendimento, a consulta de status e os comandos da administração. A pasta [chat_cliente](chat_cliente/) contém as páginas HTML e o servidor Node.js que encaminha as chamadas ao n8n. O servidor usa apenas módulos nativos do Node.js.
 
+## Partes do workflow
+
+### 1. Atendimento ao cliente
+
+![Fluxo de atendimento no n8n, da mensagem do cliente ao registro do pedido e aviso por e-mail](docs/workflow/atendimento.png)
+
+O webhook recebe a mensagem e busca a conversa pelo identificador da sessão. O Gemini extrai os dados do pedido em JSON, com o Groq como alternativa se o modelo principal falhar. Um nó JavaScript valida os campos e a data, e o fluxo salva o contexto da conversa no Google Sheets.
+
+Se falta algum dado, o chat pede a informação para continuar na próxima mensagem. Quando o pedido está completo, o fluxo registra o agendamento como **Pendente**, devolve o número do pedido ao cliente e avisa a equipe pelo Gmail.
+
+### 2. Administração dos agendamentos
+
+![Fluxo administrativo no n8n com os caminhos para listar pedidos, aprovar um agendamento, ler notificações e pedir ajuda](docs/workflow/administracao.png)
+
+O chat usa o login do n8n e encaminha cada comando para a operação correspondente. `/listar pendentes` mostra os pedidos aguardando confirmação. `/notificacoes` exibe os avisos e os marca como lidos. `/ajuda` apresenta os comandos disponíveis.
+
+Ao receber `/aprovar ID`, o fluxo busca o pedido pelo número. Se estiver **Pendente**, muda o status para **Confirmado** e registra a aprovação na aba `Comandos`. Se o pedido não existir ou já tiver sido processado, o chat informa o resultado.
+
+### 3. Consulta de status pelo cliente
+
+![Fluxo de consulta de status no n8n, com webhook GET, busca pelo número do pedido e resposta em JSON](docs/workflow/consulta-status.png)
+
+O chat consulta um webhook `GET` com o número do pedido. O n8n busca o registro no Google Sheets e devolve um JSON com três campos: número, status e indicador de confirmação. Os possíveis status são **Pendente**, **Confirmado** e **Desconhecido**.
+
 ## Rodar localmente
 
 Você precisa de Node.js 22 ou superior, Docker, uma planilha no Google Sheets e credenciais próprias para Google Sheets, Gmail, Gemini e Groq.
